@@ -78,6 +78,81 @@ function stopVolumePolling() {
     }
 }
 
+// Funkce pro unmutování na YouTube
+function unmuteYouTube() {
+    try {
+        // Najít YouTube mute button
+        const muteButton = document.querySelector('.ytp-mute-button') ||
+                          document.querySelector('button[aria-label*="Unmute" i]')
+        
+        if (muteButton) {
+            const buttonLabel = muteButton.getAttribute('aria-label')?.toLowerCase() || ''
+            // Pokud je muted (tlačítko říká "Unmute"), kliknout na něj
+            if (buttonLabel.includes('unmute')) {
+                muteButton.click()
+            }
+        }
+    } catch (e) {
+        console.log('YouTube unmute error:', e)
+    }
+}
+
+// Funkce pro unmutování na Twitch
+function unmuteTwitch() {
+    try {
+        // Najít Twitch mute button pomocí různých selektorů
+        const muteButtonSelectors = [
+            '[data-a-target="player-mute-unmute-button"]',
+            'button[aria-label*="Unmute" i]',
+            'button[aria-label*="Mute" i]',
+            '.player-controls button[aria-label*="sound" i]',
+            'button[data-a-target*="mute"]',
+            '.player-controls-bottom button:first-child',
+            'video + div button[aria-label*="sound" i]'
+        ]
+        
+        let muteButton = null
+        for (const selector of muteButtonSelectors) {
+            muteButton = document.querySelector(selector)
+            if (muteButton) break
+        }
+        
+        if (muteButton) {
+            const buttonLabel = muteButton.getAttribute('aria-label')?.toLowerCase() || ''
+            const ariaPressed = muteButton.getAttribute('aria-pressed')
+            const title = muteButton.getAttribute('title')?.toLowerCase() || ''
+            
+            // Zkontrolovat, jestli je muted různými způsoby
+            const isMuted = buttonLabel.includes('unmute') || 
+                          ariaPressed === 'true' ||
+                          title.includes('unmute') ||
+                          muteButton.classList.contains('active') ||
+                          muteButton.querySelector('svg[data-a-target="player-mute-icon"]')
+            
+            // Pokud je muted, kliknout na něj
+            if (isMuted) {
+                muteButton.click()
+                // Počkat chvíli a zkusit znovu, pokud to nepomohlo
+                setTimeout(() => {
+                    const stillMuted = document.querySelector('video')?.muted
+                    if (stillMuted) {
+                        muteButton?.click()
+                    }
+                }, 100)
+            }
+        }
+        
+        // Také zkusit najít video element a unmutovat ho přímo
+        const video = document.querySelector('video[data-a-target="player-video"]') ||
+                     document.querySelector('video')
+        if (video && video.muted) {
+            video.muted = false
+        }
+    } catch (e) {
+        console.log('Twitch unmute error:', e)
+    }
+}
+
 // Funkce pro aplikaci hlasitosti na všechny audio/video elementy
 function applyVolume(volume, fromExtension = false) {
     isExtensionChange = fromExtension
@@ -87,6 +162,37 @@ function applyVolume(volume, fromExtension = false) {
     // Najít všechny audio a video elementy
     const allMedia = document.querySelectorAll('audio, video')
 
+    // Pokud je změna z rozšíření a hlasitost > 0, zkontrolovat mute stav
+    if (fromExtension && volume > 0) {
+        const hostname = window.location.hostname.toLowerCase()
+        
+        // Zkontrolovat, jestli je nějaký media element muted
+        let hasMutedMedia = false
+        for (const media of allMedia) {
+            if (media.muted) {
+                hasMutedMedia = true
+                break
+            }
+        }
+        
+        // Pokud je muted, unmutovat
+        if (hasMutedMedia) {
+            // Nejdřív zkusit unmutovat pomocí UI tlačítek (YouTube, Twitch)
+            if (hostname.includes('youtube.com') || hostname.includes('youtu.be')) {
+                setTimeout(() => unmuteYouTube(), 50)
+            } else if (hostname.includes('twitch.tv') || hostname.includes('twitch.com')) {
+                setTimeout(() => unmuteTwitch(), 50)
+            }
+            
+            // Pak unmutovat všechny media elementy
+            allMedia.forEach((media) => {
+                if (media.muted) {
+                    media.muted = false
+                }
+            })
+        }
+    }
+
     allMedia.forEach((media) => {
         audioElements.add(media)
 
@@ -94,6 +200,11 @@ function applyVolume(volume, fromExtension = false) {
         if (Math.abs(media.volume - volume) > 0.001) {
             media.volume = volume
             lastKnownVolume = volume
+        }
+        
+        // Pokud je změna z rozšíření a hlasitost > 0, unmutovat
+        if (fromExtension && volume > 0 && media.muted) {
+            media.muted = false
         }
 
         // Sledovat změny hlasitosti zvenčí (např. z UI stránky)
