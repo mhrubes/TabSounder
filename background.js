@@ -77,6 +77,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'setVolume') {
         setTabVolume(request.tabId, request.volume)
         sendResponse({ success: true })
+    } else if (request.action === 'volumeChangedFromPage') {
+        // Aktualizovat uloženou hlasitost, když se změní na stránce
+        const tabId = request.tabId || sender.tab?.id
+        if (tabId) {
+            chrome.storage.local.get(['tabVolumes'], (result) => {
+                const tabVolumes = result.tabVolumes || {}
+                tabVolumes[tabId] = request.volume
+                chrome.storage.local.set({ tabVolumes })
+            })
+        }
+        sendResponse({ success: true })
     } else if (request.action === 'getVolume') {
         const tabId = request.tabId || sender.tab?.id
         if (tabId) {
@@ -136,7 +147,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         chrome.tabs.query({}, async (tabs) => {
             const tabsWithVolumes = await Promise.all(
                 tabs.map(async (tab) => {
-                    const volume = await getTabVolume(tab.id)
+                    // Nejdřív získat uloženou hlasitost
+                    let volume = await getTabVolume(tab.id)
+                    
                     // Zkontrolovat, jestli má záložka audio/video obsah
                     let hasMedia = false
                     if (tab.url && !tab.url.startsWith('chrome://') && !tab.url.startsWith('chrome-extension://')) {
@@ -157,6 +170,33 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                             })
                             // Použít výsledek z content scriptu, nebo fallback na URL check
                             hasMedia = response.hasMedia || hasMedia
+                            
+                            // Pokud má media, zkusit získat skutečnou aktuální hlasitost
+                            if (hasMedia) {
+                                try {
+                                    const volumeResponse = await new Promise((resolve) => {
+                                        chrome.tabs.sendMessage(tab.id, { action: 'getCurrentVolume' }, (response) => {
+                                            if (chrome.runtime.lastError) {
+                                                resolve(null)
+                                            } else {
+                                                resolve(response)
+                                            }
+                                        })
+                                    })
+                                    // Pokud jsme získali skutečnou hlasitost, použít ji
+                                    if (volumeResponse && volumeResponse.volume !== undefined) {
+                                        volume = volumeResponse.volume
+                                        // Aktualizovat uloženou hodnotu
+                                        chrome.storage.local.get(['tabVolumes'], (result) => {
+                                            const tabVolumes = result.tabVolumes || {}
+                                            tabVolumes[tab.id] = volume
+                                            chrome.storage.local.set({ tabVolumes })
+                                        })
+                                    }
+                                } catch (e) {
+                                    // Pokud se nepodařilo získat skutečnou hlasitost, použít uloženou
+                                }
+                            }
                         } catch (e) {
                             // Použít URL check jako fallback
                             hasMedia = hasMedia || checkUrlForMedia(tab.url)

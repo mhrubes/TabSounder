@@ -2,6 +2,11 @@
 document.addEventListener('DOMContentLoaded', () => {
   loadTabs();
   document.getElementById('refreshBtn').addEventListener('click', loadTabs);
+  
+  // Periodicky aktualizovat hlasitost (každé 2 sekundy)
+  setInterval(() => {
+    updateVolumes();
+  }, 2000);
 });
 
 // Načtení všech záložek
@@ -83,9 +88,23 @@ function createTabItem(tab) {
   const muteBtn = tabItem.querySelector('.mute-btn');
   const volumeValue = tabItem.querySelector('.volume-value');
 
+  // Funkce pro aktualizaci fialového zabarvení slideru
+  function updateSliderProgress(sliderElement) {
+    const value = sliderElement.value;
+    const max = sliderElement.max || 100;
+    const percentage = (value / max) * 100;
+    
+    // Nastavit CSS custom property pro gradient (používá se v ::-webkit-slider-runnable-track a ::-moz-range-track)
+    sliderElement.style.setProperty('--slider-progress', percentage + '%');
+  }
+
+  // Nastavit počáteční hodnotu
+  updateSliderProgress(slider);
+
   slider.addEventListener('input', (e) => {
     const volume = e.target.value / 100;
     volumeValue.textContent = Math.round(volume * 100) + '%';
+    updateSliderProgress(e.target);
     setTabVolume(tab.id, volume);
     updateMuteButton(muteBtn, volume);
   });
@@ -95,6 +114,7 @@ function createTabItem(tab) {
     const newVolume = currentVolume === 0 ? 1.0 : 0;
     slider.value = newVolume * 100;
     volumeValue.textContent = Math.round(newVolume * 100) + '%';
+    updateSliderProgress(slider);
     setTabVolume(tab.id, newVolume);
     updateMuteButton(muteBtn, newVolume);
   });
@@ -117,6 +137,40 @@ async function setTabVolume(tabId, volume) {
     });
   } catch (error) {
     console.error('Chyba při nastavení hlasitosti:', error);
+  }
+}
+
+// Aktualizace hlasitosti pro všechny záložky
+async function updateVolumes() {
+  try {
+    const response = await chrome.runtime.sendMessage({ action: 'getAllTabs' });
+    const tabs = response.tabs || [];
+    
+    tabs.forEach(tab => {
+      const tabItem = document.querySelector(`[data-tab-id="${tab.id}"]`);
+      if (tabItem) {
+        const slider = tabItem.querySelector('.volume-slider');
+        const volumeValue = tabItem.querySelector('.volume-value');
+        const muteBtn = tabItem.querySelector('.mute-btn');
+        
+        if (slider && volumeValue) {
+          const currentValue = Math.round(parseFloat(slider.value));
+          const newValue = Math.round(tab.volume * 100);
+          
+          // Aktualizovat pouze pokud se hodnota změnila
+          if (currentValue !== newValue) {
+            slider.value = newValue;
+            volumeValue.textContent = newValue + '%';
+            // Aktualizovat fialové zabarvení slideru
+            const percentage = (newValue / 100) * 100;
+            slider.style.setProperty('--slider-progress', percentage + '%');
+            updateMuteButton(muteBtn, tab.volume);
+          }
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Chyba při aktualizaci hlasitosti:', error);
   }
 }
 

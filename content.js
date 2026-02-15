@@ -16,32 +16,114 @@ chrome.runtime.sendMessage({ action: 'getCurrentTabId' }, (response) => {
     }
 })
 
+// Flag pro označení, že změna hlasitosti pochází z rozšíření
+let isExtensionChange = false
+let lastKnownVolume = 1.0
+
+// Funkce pro synchronizaci hlasitosti se stránkou
+function syncVolumeFromPage() {
+    const allMedia = document.querySelectorAll('audio, video')
+    if (allMedia.length === 0) return
+
+    // Najít aktivní nebo první media element
+    let activeMedia = null
+    for (const media of allMedia) {
+        if (media.readyState > 0 && !media.paused) {
+            activeMedia = media
+            break
+        }
+    }
+    if (!activeMedia && allMedia.length > 0) {
+        activeMedia = allMedia[0]
+    }
+
+    if (activeMedia) {
+        const actualVolume = activeMedia.volume
+        // Pokud se hlasitost změnila a nepochází z rozšíření, aktualizovat
+        if (Math.abs(actualVolume - lastKnownVolume) > 0.001 && !isExtensionChange) {
+            currentVolume = actualVolume
+            lastKnownVolume = actualVolume
+            // Poslat změnu do background scriptu
+            if (currentTabId) {
+                chrome.runtime
+                    .sendMessage({
+                        action: 'volumeChangedFromPage',
+                        tabId: currentTabId,
+                        volume: currentVolume
+                    })
+                    .catch(() => {})
+            }
+        } else if (Math.abs(actualVolume - lastKnownVolume) > 0.001) {
+            // Aktualizovat lastKnownVolume i když je to z rozšíření
+            lastKnownVolume = actualVolume
+        }
+    }
+}
+
+// Polling mechanismus pro detekci změn hlasitosti
+let volumeCheckInterval = null
+
+function startVolumePolling() {
+    if (volumeCheckInterval) return
+
+    volumeCheckInterval = setInterval(() => {
+        syncVolumeFromPage()
+    }, 300) // Kontrolovat každých 300ms pro rychlejší detekci
+}
+
+function stopVolumePolling() {
+    if (volumeCheckInterval) {
+        clearInterval(volumeCheckInterval)
+        volumeCheckInterval = null
+    }
+}
+
 // Funkce pro aplikaci hlasitosti na všechny audio/video elementy
-function applyVolume(volume) {
+function applyVolume(volume, fromExtension = false) {
+    isExtensionChange = fromExtension
     currentVolume = volume
+    lastKnownVolume = volume
 
     // Najít všechny audio a video elementy
     const allMedia = document.querySelectorAll('audio, video')
 
     allMedia.forEach((media) => {
         audioElements.add(media)
-        media.volume = volume
 
-        // Sledovat změny hlasitosti zvenčí a obnovit naši hodnotu
-        const originalVolumeSetter = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'volume')?.set
-        if (originalVolumeSetter) {
-            Object.defineProperty(media, 'volume', {
-                get: function () {
-                    return currentVolume
-                },
-                set: function (value) {
-                    // Ignorovat externí změny, použít naši hodnotu
-                    originalVolumeSetter.call(this, currentVolume)
-                },
-                configurable: true
+        // Pokud se hlasitost liší, aplikovat novou hodnotu
+        if (Math.abs(media.volume - volume) > 0.001) {
+            media.volume = volume
+            lastKnownVolume = volume
+        }
+
+        // Sledovat změny hlasitosti zvenčí (např. z UI stránky)
+        if (!media._volumeListenerAdded) {
+            media.addEventListener('volumechange', () => {
+                if (!isExtensionChange && Math.abs(media.volume - currentVolume) > 0.001) {
+                    currentVolume = media.volume
+                    lastKnownVolume = media.volume
+                    if (currentTabId) {
+                        chrome.runtime
+                            .sendMessage({
+                                action: 'volumeChangedFromPage',
+                                tabId: currentTabId,
+                                volume: currentVolume
+                            })
+                            .catch(() => {})
+                    }
+                }
+                isExtensionChange = false
             })
+            media._volumeListenerAdded = true
         }
     })
+
+    isExtensionChange = false
+
+    // Spustit polling pokud ještě neběží
+    if (allMedia.length > 0) {
+        startVolumePolling()
+    }
 }
 
 // Sledování nových audio/video elementů
@@ -53,7 +135,45 @@ const observer = new MutationObserver((mutations) => {
                 // Zkontrolovat přidané audio/video elementy
                 if (node.tagName === 'AUDIO' || node.tagName === 'VIDEO') {
                     audioElements.add(node)
-                    node.volume = currentVolume
+                    // Zkontrolovat aktuální hlasitost nového elementu
+                    if (Math.abs(node.volume - currentVolume) > 0.001 && !isExtensionChange) {
+                        // Pokud má jinou hlasitost, použít ji
+                        currentVolume = node.volume
+                        lastKnownVolume = node.volume
+                        if (currentTabId) {
+                            chrome.runtime
+                                .sendMessage({
+                                    action: 'volumeChangedFromPage',
+                                    tabId: currentTabId,
+                                    volume: currentVolume
+                                })
+                                .catch(() => {})
+                        }
+                    } else if (Math.abs(node.volume - currentVolume) > 0.001) {
+                        node.volume = currentVolume
+                    }
+                    // Přidat posluchač pro změny hlasitosti
+                    if (!node._volumeListenerAdded) {
+                        node.addEventListener('volumechange', () => {
+                            if (!isExtensionChange && Math.abs(node.volume - currentVolume) > 0.001) {
+                                currentVolume = node.volume
+                                lastKnownVolume = node.volume
+                                if (currentTabId) {
+                                    chrome.runtime
+                                        .sendMessage({
+                                            action: 'volumeChangedFromPage',
+                                            tabId: currentTabId,
+                                            volume: currentVolume
+                                        })
+                                        .catch(() => {})
+                                }
+                            }
+                            isExtensionChange = false
+                        })
+                        node._volumeListenerAdded = true
+                    }
+                    // Spustit polling pokud ještě neběží
+                    startVolumePolling()
                 }
 
                 // Zkontrolovat vnořené audio/video elementy
@@ -61,8 +181,48 @@ const observer = new MutationObserver((mutations) => {
                 if (mediaElements) {
                     mediaElements.forEach((media) => {
                         audioElements.add(media)
-                        media.volume = currentVolume
+                        // Zkontrolovat aktuální hlasitost nového elementu
+                        if (Math.abs(media.volume - currentVolume) > 0.001 && !isExtensionChange) {
+                            // Pokud má jinou hlasitost, použít ji
+                            currentVolume = media.volume
+                            lastKnownVolume = media.volume
+                            if (currentTabId) {
+                                chrome.runtime
+                                    .sendMessage({
+                                        action: 'volumeChangedFromPage',
+                                        tabId: currentTabId,
+                                        volume: currentVolume
+                                    })
+                                    .catch(() => {})
+                            }
+                        } else if (Math.abs(media.volume - currentVolume) > 0.001) {
+                            media.volume = currentVolume
+                        }
+                        // Přidat posluchač pro změny hlasitosti
+                        if (!media._volumeListenerAdded) {
+                            media.addEventListener('volumechange', () => {
+                                if (!isExtensionChange && Math.abs(media.volume - currentVolume) > 0.001) {
+                                    currentVolume = media.volume
+                                    lastKnownVolume = media.volume
+                                    if (currentTabId) {
+                                        chrome.runtime
+                                            .sendMessage({
+                                                action: 'volumeChangedFromPage',
+                                                tabId: currentTabId,
+                                                volume: currentVolume
+                                            })
+                                            .catch(() => {})
+                                    }
+                                }
+                                isExtensionChange = false
+                            })
+                            media._volumeListenerAdded = true
+                        }
                     })
+                    // Spustit polling pokud ještě neběží
+                    if (mediaElements.length > 0) {
+                        startVolumePolling()
+                    }
                 }
             }
         })
@@ -85,12 +245,51 @@ if (document.body) {
 }
 
 // Aplikovat hlasitost při načtení stránky
+function initializeVolume() {
+    // Nejdřív zkontrolovat, jestli už jsou nějaké media elementy s nastavenou hlasitostí
+    const allMedia = document.querySelectorAll('audio, video')
+    let foundVolume = null
+
+    for (const media of allMedia) {
+        if (media.volume !== undefined) {
+            foundVolume = media.volume
+            lastKnownVolume = media.volume
+            break
+        }
+    }
+
+    // Pokud jsme našli jinou hlasitost, použít ji
+    if (foundVolume !== null && Math.abs(foundVolume - currentVolume) > 0.001) {
+        currentVolume = foundVolume
+        lastKnownVolume = foundVolume
+        // Poslat změnu do background scriptu
+        if (currentTabId) {
+            chrome.runtime
+                .sendMessage({
+                    action: 'volumeChangedFromPage',
+                    tabId: currentTabId,
+                    volume: currentVolume
+                })
+                .catch(() => {})
+        }
+    }
+
+    applyVolume(currentVolume)
+
+    // Spustit polling pro detekci změn
+    if (allMedia.length > 0) {
+        startVolumePolling()
+    }
+}
+
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {
-        applyVolume(currentVolume)
+        // Počkat chvíli, aby se media elementy načetly
+        setTimeout(initializeVolume, 500)
     })
 } else {
-    applyVolume(currentVolume)
+    // Počkat chvíli, aby se media elementy načetly
+    setTimeout(initializeVolume, 500)
 }
 
 // Funkce pro kontrolu, jestli stránka má audio/video elementy
@@ -170,14 +369,39 @@ function hasMediaElements() {
     return false
 }
 
+// Funkce pro získání aktuální hlasitosti z media elementů
+function getCurrentMediaVolume() {
+    const allMedia = document.querySelectorAll('audio, video')
+    if (allMedia.length === 0) {
+        return currentVolume
+    }
+
+    // Najít první aktivní media element s hlasitostí
+    for (const media of allMedia) {
+        if (media.readyState > 0 && !media.paused) {
+            return media.volume
+        }
+    }
+
+    // Pokud není žádný aktivní, použít první dostupný
+    if (allMedia.length > 0) {
+        return allMedia[0].volume
+    }
+
+    return currentVolume
+}
+
 // Posluchač zpráv z background scriptu
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'volumeChanged') {
-        applyVolume(request.volume)
+        applyVolume(request.volume, true) // Označit jako změnu z rozšíření
         sendResponse({ success: true })
     } else if (request.action === 'hasMedia') {
         const hasMedia = hasMediaElements()
         sendResponse({ hasMedia })
+    } else if (request.action === 'getCurrentVolume') {
+        const actualVolume = getCurrentMediaVolume()
+        sendResponse({ volume: actualVolume })
     }
     return true
 })
