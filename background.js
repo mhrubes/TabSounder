@@ -35,7 +35,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
                                     volume: result.tabVolumes[tabId]
                                 })
                                 .catch(() => {})
-                        }, 100)
+                        }, 300)
                     })
             }
         })

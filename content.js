@@ -400,11 +400,11 @@ function initializeVolume() {
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {
         // Počkat chvíli, aby se media elementy načetly
-        setTimeout(initializeVolume, 100)
+        setTimeout(initializeVolume, 300)
     })
 } else {
     // Počkat chvíli, aby se media elementy načetly
-    setTimeout(initializeVolume, 100)
+    setTimeout(initializeVolume, 300)
 }
 
 // Funkce pro kontrolu, jestli stránka má audio/video elementy
@@ -631,9 +631,28 @@ function togglePauseState() {
             }
         }
 
-        allMedia.forEach((media) => {
-            media.play().catch(() => {})
-        })
+        // Počkat chvíli po kliknutí na UI tlačítko, pak zkusit spustit media
+        setTimeout(() => {
+            allMedia.forEach((media) => {
+                // Zkusit spustit s retry logikou
+                const tryPlay = (retries = 3) => {
+                    if (retries <= 0) return
+
+                    media
+                        .play()
+                        .then(() => {
+                            // Úspěšně spuštěno
+                        })
+                        .catch((error) => {
+                            // Pokud selže, zkusit znovu po chvíli
+                            if (retries > 0) {
+                                setTimeout(() => tryPlay(retries - 1), 100)
+                            }
+                        })
+                }
+                tryPlay()
+            })
+        }, 50)
     } else {
         // Pause
         if (hostname.includes('youtube.com') || hostname.includes('youtu.be')) {
