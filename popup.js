@@ -62,7 +62,13 @@ function createTabItem(tab) {
 
   tabItem.innerHTML = `
     <div class="tab-info">
-      <div class="tab-title">${truncatedTitle}</div>
+      <div class="tab-title-row">
+        <div class="tab-title">${truncatedTitle}</div>
+        <div class="tab-actions">
+          <button class="action-btn mute-action-btn" data-tab-id="${tab.id}">Mute</button>
+          <button class="action-btn pause-action-btn" data-tab-id="${tab.id}">Pause</button>
+        </div>
+      </div>
       <div class="tab-url">${getDomain(tab.url)}</div>
     </div>
     <div class="tab-controls">
@@ -77,15 +83,13 @@ function createTabItem(tab) {
         >
         <div class="volume-value">${Math.round(tab.volume * 100)}%</div>
       </div>
-      <button class="mute-btn" data-tab-id="${tab.id}" title="Ztlumit/Zapnout">
-        ${tab.volume === 0 ? '🔇' : '🔊'}
-      </button>
     </div>
   `;
 
   // Event listenery
   const slider = tabItem.querySelector('.volume-slider');
-  const muteBtn = tabItem.querySelector('.mute-btn');
+  const muteBtn = tabItem.querySelector('.mute-action-btn');
+  const pauseBtn = tabItem.querySelector('.pause-action-btn');
   const volumeValue = tabItem.querySelector('.volume-value');
 
   // Funkce pro aktualizaci fialového zabarvení slideru
@@ -106,25 +110,90 @@ function createTabItem(tab) {
     volumeValue.textContent = Math.round(volume * 100) + '%';
     updateSliderProgress(e.target);
     setTabVolume(tab.id, volume);
-    updateMuteButton(muteBtn, volume);
   });
 
+  // Aktualizovat stavy tlačítek
+  updateButtonStates(muteBtn, pauseBtn, tab.muted, tab.paused);
+
   muteBtn.addEventListener('click', () => {
-    const currentVolume = parseFloat(slider.value) / 100;
-    const newVolume = currentVolume === 0 ? 1.0 : 0;
-    slider.value = newVolume * 100;
-    volumeValue.textContent = Math.round(newVolume * 100) + '%';
-    updateSliderProgress(slider);
-    setTabVolume(tab.id, newVolume);
-    updateMuteButton(muteBtn, newVolume);
+    toggleMute(tab.id);
+    // Aktualizovat stav po kliknutí
+    setTimeout(() => {
+      updateButtonStates(muteBtn, pauseBtn);
+    }, 100);
+  });
+
+  pauseBtn.addEventListener('click', () => {
+    togglePause(tab.id);
+    // Aktualizovat stav po kliknutí
+    setTimeout(() => {
+      updateButtonStates(muteBtn, pauseBtn);
+    }, 100);
   });
 
   document.getElementById('tabsList').appendChild(tabItem);
 }
 
-// Aktualizace tlačítka mute
-function updateMuteButton(btn, volume) {
-  btn.textContent = volume === 0 ? '🔇' : '🔊';
+// Aktualizace stavů tlačítek
+async function updateButtonStates(muteBtn, pauseBtn, mutedState, pausedState) {
+  if (!muteBtn || !pauseBtn) return;
+  
+  try {
+    // Pokud nejsou stavy poskytnuty, získat je
+    if (mutedState === undefined || pausedState === undefined) {
+      const tabId = muteBtn.dataset.tabId;
+      const response = await chrome.runtime.sendMessage({ action: 'getAllTabs' });
+      const tab = response.tabs?.find(t => t.id === parseInt(tabId));
+      if (tab) {
+        mutedState = tab.muted;
+        pausedState = tab.paused;
+      }
+    }
+    
+    // Aktualizovat mute button
+    if (mutedState) {
+      muteBtn.classList.add('active');
+      muteBtn.textContent = 'Unmute';
+    } else {
+      muteBtn.classList.remove('active');
+      muteBtn.textContent = 'Mute';
+    }
+    
+    // Aktualizovat pause button
+    if (pausedState) {
+      pauseBtn.classList.add('active');
+      pauseBtn.textContent = 'Play';
+    } else {
+      pauseBtn.classList.remove('active');
+      pauseBtn.textContent = 'Pause';
+    }
+  } catch (error) {
+    console.error('Chyba při aktualizaci stavů tlačítek:', error);
+  }
+}
+
+// Přepnutí mute stavu
+async function toggleMute(tabId) {
+  try {
+    await chrome.runtime.sendMessage({
+      action: 'toggleMute',
+      tabId: tabId
+    });
+  } catch (error) {
+    console.error('Chyba při přepnutí mute:', error);
+  }
+}
+
+// Přepnutí pause stavu
+async function togglePause(tabId) {
+  try {
+    await chrome.runtime.sendMessage({
+      action: 'togglePause',
+      tabId: tabId
+    });
+  } catch (error) {
+    console.error('Chyba při přepnutí pause:', error);
+  }
 }
 
 // Nastavení hlasitosti záložky
@@ -151,7 +220,8 @@ async function updateVolumes() {
       if (tabItem) {
         const slider = tabItem.querySelector('.volume-slider');
         const volumeValue = tabItem.querySelector('.volume-value');
-        const muteBtn = tabItem.querySelector('.mute-btn');
+        const muteBtn = tabItem.querySelector('.mute-action-btn');
+        const pauseBtn = tabItem.querySelector('.pause-action-btn');
         
         if (slider && volumeValue) {
           const currentValue = Math.round(parseFloat(slider.value));
@@ -164,8 +234,12 @@ async function updateVolumes() {
             // Aktualizovat fialové zabarvení slideru
             const percentage = (newValue / 100) * 100;
             slider.style.setProperty('--slider-progress', percentage + '%');
-            updateMuteButton(muteBtn, tab.volume);
           }
+        }
+        
+        // Aktualizovat stavy tlačítek
+        if (muteBtn && pauseBtn) {
+          updateButtonStates(muteBtn, pauseBtn, tab.muted, tab.paused);
         }
       }
     });

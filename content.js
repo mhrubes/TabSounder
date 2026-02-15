@@ -2,13 +2,39 @@
 let currentVolume = 1.0
 const audioElements = new Set()
 let currentTabId = null
+let extensionContextValid = true
+
+// Pomocná funkce pro bezpečné posílání zpráv do background scriptu
+function safeSendMessage(message, callback) {
+    if (!extensionContextValid) {
+        if (callback) callback(null)
+        return
+    }
+
+    try {
+        chrome.runtime.sendMessage(message, (response) => {
+            if (chrome.runtime.lastError) {
+                // Extension context může být invalidován
+                if (chrome.runtime.lastError.message.includes('Extension context invalidated') || chrome.runtime.lastError.message.includes('message port closed')) {
+                    extensionContextValid = false
+                }
+                if (callback) callback(null)
+                return
+            }
+            if (callback) callback(response)
+        })
+    } catch (e) {
+        extensionContextValid = false
+        if (callback) callback(null)
+    }
+}
 
 // Získat tabId této záložky
-chrome.runtime.sendMessage({ action: 'getCurrentTabId' }, (response) => {
+safeSendMessage({ action: 'getCurrentTabId' }, (response) => {
     if (response && response.tabId) {
         currentTabId = response.tabId
         // Načíst uloženou hlasitost pro tuto záložku
-        chrome.runtime.sendMessage({ action: 'getVolume', tabId: currentTabId }, (response) => {
+        safeSendMessage({ action: 'getVolume', tabId: currentTabId }, (response) => {
             if (response && response.volume !== undefined) {
                 applyVolume(response.volume)
             }
@@ -45,13 +71,11 @@ function syncVolumeFromPage() {
             lastKnownVolume = actualVolume
             // Poslat změnu do background scriptu
             if (currentTabId) {
-                chrome.runtime
-                    .sendMessage({
-                        action: 'volumeChangedFromPage',
-                        tabId: currentTabId,
-                        volume: currentVolume
-                    })
-                    .catch(() => {})
+                safeSendMessage({
+                    action: 'volumeChangedFromPage',
+                    tabId: currentTabId,
+                    volume: currentVolume
+                })
             }
         } else if (Math.abs(actualVolume - lastKnownVolume) > 0.001) {
             // Aktualizovat lastKnownVolume i když je to z rozšíření
@@ -82,9 +106,8 @@ function stopVolumePolling() {
 function unmuteYouTube() {
     try {
         // Najít YouTube mute button
-        const muteButton = document.querySelector('.ytp-mute-button') ||
-                          document.querySelector('button[aria-label*="Unmute" i]')
-        
+        const muteButton = document.querySelector('.ytp-mute-button') || document.querySelector('button[aria-label*="Unmute" i]')
+
         if (muteButton) {
             const buttonLabel = muteButton.getAttribute('aria-label')?.toLowerCase() || ''
             // Pokud je muted (tlačítko říká "Unmute"), kliknout na něj
@@ -101,34 +124,22 @@ function unmuteYouTube() {
 function unmuteTwitch() {
     try {
         // Najít Twitch mute button pomocí různých selektorů
-        const muteButtonSelectors = [
-            '[data-a-target="player-mute-unmute-button"]',
-            'button[aria-label*="Unmute" i]',
-            'button[aria-label*="Mute" i]',
-            '.player-controls button[aria-label*="sound" i]',
-            'button[data-a-target*="mute"]',
-            '.player-controls-bottom button:first-child',
-            'video + div button[aria-label*="sound" i]'
-        ]
-        
+        const muteButtonSelectors = ['[data-a-target="player-mute-unmute-button"]', 'button[aria-label*="Unmute" i]', 'button[aria-label*="Mute" i]', '.player-controls button[aria-label*="sound" i]', 'button[data-a-target*="mute"]', '.player-controls-bottom button:first-child', 'video + div button[aria-label*="sound" i]']
+
         let muteButton = null
         for (const selector of muteButtonSelectors) {
             muteButton = document.querySelector(selector)
             if (muteButton) break
         }
-        
+
         if (muteButton) {
             const buttonLabel = muteButton.getAttribute('aria-label')?.toLowerCase() || ''
             const ariaPressed = muteButton.getAttribute('aria-pressed')
             const title = muteButton.getAttribute('title')?.toLowerCase() || ''
-            
+
             // Zkontrolovat, jestli je muted různými způsoby
-            const isMuted = buttonLabel.includes('unmute') || 
-                          ariaPressed === 'true' ||
-                          title.includes('unmute') ||
-                          muteButton.classList.contains('active') ||
-                          muteButton.querySelector('svg[data-a-target="player-mute-icon"]')
-            
+            const isMuted = buttonLabel.includes('unmute') || ariaPressed === 'true' || title.includes('unmute') || muteButton.classList.contains('active') || muteButton.querySelector('svg[data-a-target="player-mute-icon"]')
+
             // Pokud je muted, kliknout na něj
             if (isMuted) {
                 muteButton.click()
@@ -141,10 +152,9 @@ function unmuteTwitch() {
                 }, 100)
             }
         }
-        
+
         // Také zkusit najít video element a unmutovat ho přímo
-        const video = document.querySelector('video[data-a-target="player-video"]') ||
-                     document.querySelector('video')
+        const video = document.querySelector('video[data-a-target="player-video"]') || document.querySelector('video')
         if (video && video.muted) {
             video.muted = false
         }
@@ -165,7 +175,7 @@ function applyVolume(volume, fromExtension = false) {
     // Pokud je změna z rozšíření a hlasitost > 0, zkontrolovat mute stav
     if (fromExtension && volume > 0) {
         const hostname = window.location.hostname.toLowerCase()
-        
+
         // Zkontrolovat, jestli je nějaký media element muted
         let hasMutedMedia = false
         for (const media of allMedia) {
@@ -174,7 +184,7 @@ function applyVolume(volume, fromExtension = false) {
                 break
             }
         }
-        
+
         // Pokud je muted, unmutovat
         if (hasMutedMedia) {
             // Nejdřív zkusit unmutovat pomocí UI tlačítek (YouTube, Twitch)
@@ -183,7 +193,7 @@ function applyVolume(volume, fromExtension = false) {
             } else if (hostname.includes('twitch.tv') || hostname.includes('twitch.com')) {
                 setTimeout(() => unmuteTwitch(), 50)
             }
-            
+
             // Pak unmutovat všechny media elementy
             allMedia.forEach((media) => {
                 if (media.muted) {
@@ -201,7 +211,7 @@ function applyVolume(volume, fromExtension = false) {
             media.volume = volume
             lastKnownVolume = volume
         }
-        
+
         // Pokud je změna z rozšíření a hlasitost > 0, unmutovat
         if (fromExtension && volume > 0 && media.muted) {
             media.muted = false
@@ -214,13 +224,11 @@ function applyVolume(volume, fromExtension = false) {
                     currentVolume = media.volume
                     lastKnownVolume = media.volume
                     if (currentTabId) {
-                        chrome.runtime
-                            .sendMessage({
-                                action: 'volumeChangedFromPage',
-                                tabId: currentTabId,
-                                volume: currentVolume
-                            })
-                            .catch(() => {})
+                        safeSendMessage({
+                            action: 'volumeChangedFromPage',
+                            tabId: currentTabId,
+                            volume: currentVolume
+                        })
                     }
                 }
                 isExtensionChange = false
@@ -270,13 +278,11 @@ const observer = new MutationObserver((mutations) => {
                                 currentVolume = node.volume
                                 lastKnownVolume = node.volume
                                 if (currentTabId) {
-                                    chrome.runtime
-                                        .sendMessage({
-                                            action: 'volumeChangedFromPage',
-                                            tabId: currentTabId,
-                                            volume: currentVolume
-                                        })
-                                        .catch(() => {})
+                                    safeSendMessage({
+                                        action: 'volumeChangedFromPage',
+                                        tabId: currentTabId,
+                                        volume: currentVolume
+                                    })
                                 }
                             }
                             isExtensionChange = false
@@ -375,13 +381,11 @@ function initializeVolume() {
         lastKnownVolume = foundVolume
         // Poslat změnu do background scriptu
         if (currentTabId) {
-            chrome.runtime
-                .sendMessage({
-                    action: 'volumeChangedFromPage',
-                    tabId: currentTabId,
-                    volume: currentVolume
-                })
-                .catch(() => {})
+            safeSendMessage({
+                action: 'volumeChangedFromPage',
+                tabId: currentTabId,
+                volume: currentVolume
+            })
         }
     }
 
@@ -396,11 +400,11 @@ function initializeVolume() {
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {
         // Počkat chvíli, aby se media elementy načetly
-        setTimeout(initializeVolume, 500)
+        setTimeout(initializeVolume, 100)
     })
 } else {
     // Počkat chvíli, aby se media elementy načetly
-    setTimeout(initializeVolume, 500)
+    setTimeout(initializeVolume, 100)
 }
 
 // Funkce pro kontrolu, jestli stránka má audio/video elementy
@@ -502,6 +506,154 @@ function getCurrentMediaVolume() {
     return currentVolume
 }
 
+// Funkce pro přepnutí mute stavu
+function toggleMuteState() {
+    const hostname = window.location.hostname.toLowerCase()
+    const allMedia = document.querySelectorAll('audio, video')
+
+    // Zjistit aktuální mute stav - nejdřív zkontrolovat UI tlačítka
+    let isMuted = false
+
+    if (hostname.includes('youtube.com') || hostname.includes('youtu.be')) {
+        const muteButton = document.querySelector('.ytp-mute-button')
+        if (muteButton) {
+            const buttonLabel = muteButton.getAttribute('aria-label')?.toLowerCase() || ''
+            isMuted = buttonLabel.includes('unmute')
+        }
+    } else if (hostname.includes('twitch.tv') || hostname.includes('twitch.com')) {
+        const muteButtonSelectors = ['[data-a-target="player-mute-unmute-button"]', 'button[aria-label*="Unmute" i]', 'button[aria-label*="Mute" i]']
+
+        for (const selector of muteButtonSelectors) {
+            const muteButton = document.querySelector(selector)
+            if (muteButton) {
+                const buttonLabel = muteButton.getAttribute('aria-label')?.toLowerCase() || ''
+                const ariaPressed = muteButton.getAttribute('aria-pressed')
+                const title = muteButton.getAttribute('title')?.toLowerCase() || ''
+
+                if (buttonLabel.includes('unmute') || ariaPressed === 'true' || title.includes('unmute')) {
+                    isMuted = true
+                }
+                break
+            }
+        }
+    }
+
+    // Pokud UI tlačítka nejsou dostupná, zkontrolovat media elementy
+    if (!isMuted) {
+        for (const media of allMedia) {
+            if (media.muted) {
+                isMuted = true
+                break
+            }
+        }
+    }
+
+    // Přepnout mute stav
+    if (isMuted) {
+        // Unmutovat
+        if (hostname.includes('youtube.com') || hostname.includes('youtu.be')) {
+            unmuteYouTube()
+        } else if (hostname.includes('twitch.tv') || hostname.includes('twitch.com')) {
+            unmuteTwitch()
+        }
+
+        allMedia.forEach((media) => {
+            media.muted = false
+        })
+    } else {
+        // Mutovat
+        if (hostname.includes('youtube.com') || hostname.includes('youtu.be')) {
+            const muteButton = document.querySelector('.ytp-mute-button')
+            if (muteButton) {
+                muteButton.click()
+            }
+        } else if (hostname.includes('twitch.tv') || hostname.includes('twitch.com')) {
+            const muteButtonSelectors = ['[data-a-target="player-mute-unmute-button"]', 'button[aria-label*="Mute" i]', 'button[aria-label*="sound" i]']
+
+            for (const selector of muteButtonSelectors) {
+                const muteButton = document.querySelector(selector)
+                if (muteButton) {
+                    muteButton.click()
+                    break
+                }
+            }
+        }
+
+        allMedia.forEach((media) => {
+            media.muted = true
+        })
+    }
+}
+
+// Funkce pro přepnutí pause stavu
+function togglePauseState() {
+    const hostname = window.location.hostname.toLowerCase()
+    const allMedia = document.querySelectorAll('audio, video')
+
+    // Zjistit aktuální pause stav
+    let isPaused = true
+    for (const media of allMedia) {
+        if (!media.paused) {
+            isPaused = false
+            break
+        }
+    }
+
+    // Pokud není paused, zkontrolovat pomocí UI tlačítek
+    if (!isPaused) {
+        if (hostname.includes('youtube.com') || hostname.includes('youtu.be')) {
+            const playButton = document.querySelector('.ytp-play-button')
+            if (playButton) {
+                const buttonLabel = playButton.getAttribute('aria-label')?.toLowerCase() || ''
+                isPaused = buttonLabel.includes('play')
+            }
+        } else if (hostname.includes('twitch.tv') || hostname.includes('twitch.com')) {
+            const playButton = document.querySelector('[data-a-target="player-play-pause-button"]')
+            if (playButton) {
+                const ariaLabel = playButton.getAttribute('aria-label')?.toLowerCase() || ''
+                isPaused = ariaLabel.includes('play')
+            }
+        }
+    }
+
+    // Přepnout pause stav
+    if (isPaused) {
+        // Play
+        if (hostname.includes('youtube.com') || hostname.includes('youtu.be')) {
+            const playButton = document.querySelector('.ytp-play-button')
+            if (playButton) {
+                playButton.click()
+            }
+        } else if (hostname.includes('twitch.tv') || hostname.includes('twitch.com')) {
+            const playButton = document.querySelector('[data-a-target="player-play-pause-button"]')
+            if (playButton) {
+                playButton.click()
+            }
+        }
+
+        allMedia.forEach((media) => {
+            media.play().catch(() => {})
+        })
+    } else {
+        // Pause
+        if (hostname.includes('youtube.com') || hostname.includes('youtu.be')) {
+            const playButton = document.querySelector('.ytp-play-button')
+            if (playButton) {
+                playButton.click()
+            }
+        } else if (hostname.includes('twitch.tv') || hostname.includes('twitch.com')) {
+            const playButton = document.querySelector('[data-a-target="player-play-pause-button"]')
+            if (playButton) {
+                playButton.click()
+            }
+        }
+
+        allMedia.forEach((media) => {
+            media.pause()
+        })
+    }
+}
+
 // Posluchač zpráv z background scriptu
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'volumeChanged') {
@@ -513,6 +665,54 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     } else if (request.action === 'getCurrentVolume') {
         const actualVolume = getCurrentMediaVolume()
         sendResponse({ volume: actualVolume })
+    } else if (request.action === 'getMuteState') {
+        const hostname = window.location.hostname.toLowerCase()
+        const allMedia = document.querySelectorAll('audio, video')
+        let isMuted = false
+
+        // Nejdřív zkontrolovat UI tlačítka
+        if (hostname.includes('youtube.com') || hostname.includes('youtu.be')) {
+            const muteButton = document.querySelector('.ytp-mute-button')
+            if (muteButton) {
+                const buttonLabel = muteButton.getAttribute('aria-label')?.toLowerCase() || ''
+                isMuted = buttonLabel.includes('unmute')
+            }
+        } else if (hostname.includes('twitch.tv') || hostname.includes('twitch.com')) {
+            const muteButton = document.querySelector('[data-a-target="player-mute-unmute-button"]')
+            if (muteButton) {
+                const ariaPressed = muteButton.getAttribute('aria-pressed')
+                const buttonLabel = muteButton.getAttribute('aria-label')?.toLowerCase() || ''
+                isMuted = ariaPressed === 'true' || buttonLabel.includes('unmute')
+            }
+        }
+
+        // Pokud UI tlačítka nejsou dostupná, zkontrolovat media elementy
+        if (!isMuted) {
+            for (const media of allMedia) {
+                if (media.muted) {
+                    isMuted = true
+                    break
+                }
+            }
+        }
+
+        sendResponse({ muted: isMuted })
+    } else if (request.action === 'getPauseState') {
+        const allMedia = document.querySelectorAll('audio, video')
+        let isPaused = true
+        for (const media of allMedia) {
+            if (!media.paused) {
+                isPaused = false
+                break
+            }
+        }
+        sendResponse({ paused: isPaused })
+    } else if (request.action === 'toggleMute') {
+        toggleMuteState()
+        sendResponse({ success: true })
+    } else if (request.action === 'togglePause') {
+        togglePauseState()
+        sendResponse({ success: true })
     }
     return true
 })

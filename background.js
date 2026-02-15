@@ -35,7 +35,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
                                     volume: result.tabVolumes[tabId]
                                 })
                                 .catch(() => {})
-                        }, 500)
+                        }, 100)
                     })
             }
         })
@@ -98,6 +98,26 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         } else {
             sendResponse({ volume: 1.0 })
         }
+    } else if (request.action === 'toggleMute') {
+        // Přepnout mute stav na záložce
+        chrome.tabs.sendMessage(request.tabId, { action: 'toggleMute' }, (response) => {
+            if (chrome.runtime.lastError) {
+                sendResponse({ success: false, error: chrome.runtime.lastError.message })
+            } else {
+                sendResponse({ success: true })
+            }
+        })
+        return true // Asynchronní odpověď
+    } else if (request.action === 'togglePause') {
+        // Přepnout pause stav na záložce
+        chrome.tabs.sendMessage(request.tabId, { action: 'togglePause' }, (response) => {
+            if (chrome.runtime.lastError) {
+                sendResponse({ success: false, error: chrome.runtime.lastError.message })
+            } else {
+                sendResponse({ success: true })
+            }
+        })
+        return true // Asynchronní odpověď
     } else if (request.action === 'getCurrentTabId') {
         sendResponse({ tabId: sender.tab?.id })
     } else if (request.action === 'hasMedia') {
@@ -112,26 +132,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true // Asynchronní odpověď
     } else if (request.action === 'getAllTabs') {
         // Seznam domén, které typicky mají audio/video obsah
-        const mediaDomains = [
-            'youtube.com', 'youtu.be',
-            'twitch.tv', 'twitch.com',
-            'spotify.com',
-            'soundcloud.com',
-            'vimeo.com',
-            'netflix.com',
-            'hulu.com',
-            'dailymotion.com',
-            'bitchute.com',
-            'facebook.com',
-            'instagram.com',
-            'tiktok.com',
-            'twitter.com',
-            'discord.com', 'discordapp.com',
-            'mixer.com',
-            'dlive.tv',
-            'streamable.com'
-        ]
-        
+        const mediaDomains = ['youtube.com', 'youtu.be', 'twitch.tv', 'twitch.com', 'spotify.com', 'soundcloud.com', 'vimeo.com', 'netflix.com', 'hulu.com', 'dailymotion.com', 'bitchute.com', 'facebook.com', 'instagram.com', 'tiktok.com', 'twitter.com', 'discord.com', 'discordapp.com', 'mixer.com', 'dlive.tv', 'streamable.com']
+
         // Pomocná funkce pro kontrolu URL
         function checkUrlForMedia(url) {
             if (!url) return false
@@ -143,19 +145,19 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             }
             return false
         }
-        
+
         chrome.tabs.query({}, async (tabs) => {
             const tabsWithVolumes = await Promise.all(
                 tabs.map(async (tab) => {
                     // Nejdřív získat uloženou hlasitost
                     let volume = await getTabVolume(tab.id)
-                    
+
                     // Zkontrolovat, jestli má záložka audio/video obsah
                     let hasMedia = false
                     if (tab.url && !tab.url.startsWith('chrome://') && !tab.url.startsWith('chrome-extension://')) {
                         // Nejdřív zkontrolovat URL jako fallback
                         hasMedia = checkUrlForMedia(tab.url)
-                        
+
                         // Pak zkusit content script (pokud je načten)
                         try {
                             const response = await new Promise((resolve) => {
@@ -170,8 +172,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                             })
                             // Použít výsledek z content scriptu, nebo fallback na URL check
                             hasMedia = response.hasMedia || hasMedia
-                            
-                            // Pokud má media, zkusit získat skutečnou aktuální hlasitost
+
+                            // Pokud má media, zkusit získat skutečnou aktuální hlasitost a stavy
                             if (hasMedia) {
                                 try {
                                     const volumeResponse = await new Promise((resolve) => {
@@ -202,17 +204,50 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                             hasMedia = hasMedia || checkUrlForMedia(tab.url)
                         }
                     }
+                    // Získat mute a pause stav
+                    let isMuted = false
+                    let isPaused = true
+                    if (hasMedia) {
+                        try {
+                            const muteResponse = await new Promise((resolve) => {
+                                chrome.tabs.sendMessage(tab.id, { action: 'getMuteState' }, (response) => {
+                                    if (chrome.runtime.lastError) {
+                                        resolve({ muted: false })
+                                    } else {
+                                        resolve(response || { muted: false })
+                                    }
+                                })
+                            })
+                            isMuted = muteResponse.muted || false
+
+                            const pauseResponse = await new Promise((resolve) => {
+                                chrome.tabs.sendMessage(tab.id, { action: 'getPauseState' }, (response) => {
+                                    if (chrome.runtime.lastError) {
+                                        resolve({ paused: true })
+                                    } else {
+                                        resolve(response || { paused: true })
+                                    }
+                                })
+                            })
+                            isPaused = pauseResponse.paused !== undefined ? pauseResponse.paused : true
+                        } catch (e) {
+                            // Použít výchozí hodnoty
+                        }
+                    }
+
                     return {
                         id: tab.id,
                         title: tab.title,
                         url: tab.url,
                         volume: volume,
-                        hasMedia: hasMedia
+                        hasMedia: hasMedia,
+                        muted: isMuted,
+                        paused: isPaused
                     }
                 })
             )
             // Filtrovat pouze záložky s audio/video obsahem
-            const tabsWithMedia = tabsWithVolumes.filter(tab => tab.hasMedia)
+            const tabsWithMedia = tabsWithVolumes.filter((tab) => tab.hasMedia)
             sendResponse({ tabs: tabsWithMedia })
         })
         return true // Asynchronní odpověď
